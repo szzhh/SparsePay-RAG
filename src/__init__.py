@@ -1,0 +1,1 @@
+# SparsePay-RAG: On-Demand Privacy Budget Payment for DP-RAG
