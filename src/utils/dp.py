@@ -20,15 +20,17 @@ class DPExpenseOverflow(Exception):
 class ClippedLogitsDP:
     """DP engine for logits-based contrastive decoding with zCDP accounting.
 
-    Automatically computes the clipping norm from the per-token privacy budget.
+    All budget tracking is done in rho-space (zCDP).
+    rho is additive under composition: rho_total = rho_cls + rho_gen.
+    The clipping norm is derived directly from rho_per_token.
+
     Uses the exponential mechanism via softmax sampling.
     """
 
     def __init__(
         self,
-        eps_per_token: float,
-        delta_per_token: float,
-        target_eps: float,
+        rho_per_token: float,
+        target_rho: float,
         target_delta: float,
         num_private_models: int,
         temperature: float,
@@ -36,17 +38,15 @@ class ClippedLogitsDP:
     ):
         """
         Args:
-            eps_per_token: epsilon for a single DP token generation.
-            delta_per_token: delta for a single DP token generation.
-            target_eps: total epsilon budget for the entire query.
+            rho_per_token: zCDP rho for a single DP token generation.
+            target_rho: total rho budget for the entire query (generation side).
             target_delta: total delta budget for the entire query.
             num_private_models: K (number of retrieved documents).
             temperature: sampling temperature tau.
             fail_mode: 'stop' raises DPExpenseOverflow; 'fallback' returns None.
         """
-        self.eps_per_token = eps_per_token
-        self.delta_per_token = delta_per_token
-        self.target_eps = target_eps
+        self.rho_per_token = rho_per_token
+        self.target_rho = target_rho
         self.target_delta = target_delta
         self.num_private = num_private_models
         self.temperature = temperature
@@ -55,7 +55,8 @@ class ClippedLogitsDP:
         self.tokens_generated = 0
         self.budget_exhausted = False
 
-        # Compute clipping norm from per-token epsilon
+        # Compute clipping norm directly from rho_per_token:
+        # rho_token = C^2 / (2 * K^2 * tau^2)  =>  C = K * tau * sqrt(2 * rho_token)
         self.clip_norm = self._compute_clip_norm()
 
     # ------------------------------------------------------------------
@@ -63,13 +64,12 @@ class ClippedLogitsDP:
     # ------------------------------------------------------------------
 
     def _compute_clip_norm(self) -> float:
-        """Derive clipping norm C from per-token privacy budget.
+        """Derive clipping norm C from rho_per_token.
 
         From the paper:  rho_token = C^2 / (2 * K^2 * tau^2)
         =>  C = K * tau * sqrt(2 * rho_token)
         """
-        rho_tok = self._cdp_rho(self.eps_per_token, self.delta_per_token)
-        clip_norm = math.sqrt(2.0 * rho_tok) * float(self.num_private) * float(self.temperature)
+        clip_norm = math.sqrt(2.0 * self.rho_per_token) * float(self.num_private) * float(self.temperature)
         return clip_norm
 
     # ------------------------------------------------------------------
@@ -138,24 +138,33 @@ class ClippedLogitsDP:
     def compute_rho(self, num_toks: int) -> float:
         """Compute cumulative zCDP rho for `num_toks` generated tokens.
 
-        rho_tok = 0.5 * (C / (K * tau))^2
-        rho_tot = num_toks * rho_tok
+        Since rho_per_token is set at init, this is simply:
+          rho_tot = num_toks * rho_per_token
         """
-        rho_tok = 0.5 * (float(self.clip_norm) / (float(self.num_private) * float(self.temperature))) ** 2
-        return float(num_toks) * rho_tok
+        return float(num_toks) * self.rho_per_token
 
     def get_dp_expense(self) -> tuple[float, float]:
-        """Return current (epsilon, delta) privacy expenditure."""
+        """Return current (epsilon, delta) privacy expenditure.
+
+        Internally tracks rho; converts to eps only for external reporting.
+        """
         rho = self.compute_rho(self.tokens_generated)
         eps = self._cdp_eps(rho, self.target_delta)
         return eps, self.target_delta
 
+    def get_rho_expense(self) -> float:
+        """Return current rho expenditure (native zCDP metric)."""
+        return self.compute_rho(self.tokens_generated)
+
     def check_budget(self) -> None:
-        """Check if the privacy budget is exhausted; raise if so."""
+        """Check if the privacy budget is exhausted; raise if so.
+
+        Comparison is in rho-space: current_rho > target_rho => exhausted.
+        """
         if self.budget_exhausted:
             raise DPExpenseOverflow()
-        current_eps, _ = self.get_dp_expense()
-        if current_eps > self.target_eps:
+        current_rho = self.compute_rho(self.tokens_generated)
+        if current_rho > self.target_rho:
             self.budget_exhausted = True
             raise DPExpenseOverflow()
 
@@ -199,46 +208,30 @@ class ClippedLogitsDP:
 
     @staticmethod
     def compute_per_query_budget(
-        total_eps: float, total_delta: float, num_compositions: int
-    ) -> tuple[float, float]:
-        """Allocate per-step (eps, delta) from total budget via zCDP composition.
+        total_rho: float, num_compositions: int
+    ) -> float:
+        """Allocate per-step rho from total rho budget via zCDP composition.
 
-        Steps:
-          1. (total_eps, total_delta) -> rho_total  (exact conversion)
-          2. rho_single = rho_total / num_compositions
-          3. rho_single -> (target_eps, target_delta)
+        Since zCDP composition is linear in rho:
+          rho_per_step = rho_total / num_compositions
 
         Args:
-            total_eps: Total epsilon budget.
-            total_delta: Total delta budget.
+            total_rho: Total rho budget (zCDP).
             num_compositions: Number of sequential compositions.
 
         Returns:
-            (eps_per_step, delta_per_step) tuple.
+            rho_per_step (float): rho budget per composition step.
         """
-        # Helper: create a temporary instance to use cdp conversion methods
-        helper = ClippedLogitsDP(0, 0, 0, 0, 1, 1)
-
-        # Step 1: (total_eps, total_delta) -> rho_total
-        rho_total = helper._cdp_rho(total_eps, total_delta)
-
-        # Step 2: linear allocation
-        rho_single = rho_total / float(num_compositions)
-
-        # Step 3: rho_single -> eps_single
-        eps_single = helper._cdp_eps(rho_single, total_delta)
-
-        return eps_single, total_delta
+        return total_rho / float(num_compositions)
 
     @staticmethod
     def compute_cluster_noise_sigma(
-        total_eps: float,
-        total_delta: float,
+        total_rho: float,
         budget_ratio: float = 0.2,
     ) -> tuple[float, float]:
         """Compute sigma for Gaussian noise on cluster sizes (Sec. 3.2 / Sec. 4).
 
-        The paper fixes the budget split at 1:4, applied **in rho-space**
+        The paper fixes the budget split at 1:4, applied in rho-space
         (zCDP composition is linear in rho, not in epsilon).
 
         From the privacy analysis (Sec. 4):
@@ -247,22 +240,17 @@ class ClippedLogitsDP:
           rho_cls   = 1 / (2 * sigma^2)             (Gaussian mechanism, l2-sens = 1)
 
         Arguments:
-            total_eps: total epsilon budget for the full pipeline.
-            total_delta: total delta budget.
-            budget_ratio: fraction of **rho_total** allocated to cluster noise
+            total_rho: total rho budget for the full pipeline (zCDP).
+            budget_ratio: fraction of rho_total allocated to cluster noise
                           (default 0.2 for the 1:4 rho-space split).
 
         Returns:
             (sigma, rho_cls): sigma for Gaussian noise and rho_cls budget used.
         """
-        # 1. Convert total_eps -> rho_total (exact binary search)
-        helper = ClippedLogitsDP(0, 0, 0, 0, 1, 1)
-        rho_total = helper._cdp_rho(total_eps, total_delta)
+        # rho-space split: rho_cls = budget_ratio * rho_total
+        rho_cls = budget_ratio * total_rho
 
-        # 2. rho-space split: rho_cls = budget_ratio * rho_total
-        rho_cls = budget_ratio * rho_total
-
-        # 3. sigma from rho_cls = 1 / (2 * sigma^2)
+        # sigma from rho_cls = 1 / (2 * sigma^2)
         if rho_cls <= 1e-15:
             sigma = math.sqrt(0.5 / 1e-15)  # large sigma -> near-zero privacy cost
         else:
@@ -272,25 +260,20 @@ class ClippedLogitsDP:
 
     @staticmethod
     def compute_generation_rho(
-        total_eps: float,
-        total_delta: float,
+        total_rho: float,
         budget_ratio: float = 0.2,
     ) -> float:
         """Compute the generation-side rho budget (Sec. 4).
 
-        The paper fixes the budget split at 1:4 in **rho-space**:
-          rho_total = rho_cls + rho_gen
-          rho_cls   = budget_ratio * rho_total   (1/5)
-          rho_gen   = (1 - budget_ratio) * rho_total  (4/5)
+        rho_total = rho_cls + rho_gen
+        rho_cls   = budget_ratio * rho_total   (1/5)
+        rho_gen   = (1 - budget_ratio) * rho_total  (4/5)
 
         Arguments:
-            total_eps: total epsilon budget for the full pipeline.
-            total_delta: total delta budget.
+            total_rho: total rho budget for the full pipeline (zCDP).
             budget_ratio: fraction of rho_total for cluster noise (default 0.2).
 
         Returns:
             generation_rho (float): rho budget available for DP contrastive decoding.
         """
-        helper = ClippedLogitsDP(0, 0, 0, 0, 1, 1)
-        rho_total = helper._cdp_rho(total_eps, total_delta)
-        return (1.0 - budget_ratio) * rho_total
+        return (1.0 - budget_ratio) * total_rho

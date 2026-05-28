@@ -148,9 +148,12 @@ def main():
     cluster_sizes = [len(c) for c in cluster_mapping]
 
     # --- DP cluster-size noise (Sec. 3.2: 1/5 of total budget) ---
+    # Convert eps→rho once at script level; all downstream budget ops use rho directly.
     if args.total_eps is not None and args.total_eps > 0:
+        helper = ClippedLogitsDP(0, 0, 0, 0, 1, 1)
+        rho_total = helper._cdp_rho(args.total_eps, args.total_delta)
         sigma, rho_cls = ClippedLogitsDP.compute_cluster_noise_sigma(
-            args.total_eps, args.total_delta, budget_ratio=0.2
+            rho_total, budget_ratio=0.2
         )
         rng = np.random.default_rng(args.seed if hasattr(args, 'seed') else 42)
         noisy_cluster_sizes = np.maximum(

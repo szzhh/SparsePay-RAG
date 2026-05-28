@@ -102,6 +102,8 @@ python scripts/retrieve_chatdoctor.py \
     --total_eps 1 --total_delta 1e-5
 ```
 
+Note: The retrieval scripts convert the supplied `--total_eps`/`--total_delta` (ε,δ) into zCDP (`rho_total`), and allocate the budget in rho-space by default at a 1:4 ratio (rho_cls:rho_gen) between retrieval and generation. The cluster-noise standard deviation for retrieval is determined by rho_cls as σ = sqrt(1/(2 * rho_cls)).
+
 ### 4. Run Generation (SparsePay-RAG)
 
 **Single model, single budget** (e.g., OPT-1.3B with ε=1 on NQ):
@@ -118,6 +120,8 @@ python scripts/generate_nq.py \
     --em_temperature 0.4 --itr_alpha 0.2 --itr_theta 0.50 \
     --device cuda
 ```
+
+Note: `--dp_eps`/`--dp_delta` are the external (ε,δ) parameters for per-token privatization; the scripts convert them to `rho_per_token`. The scripts also convert `--total_eps`/`--total_delta` to `rho_total` and allocate `target_rho` in rho-space (default 20% retrieval, 80% generation). The internal class `ClippedLogitsDP` performs accounting using `rho_per_token` and `target_rho`; logs primarily report rho values (which can be converted back to (ε,δ) for reporting).
 
 ### 5. Run Full Experiment Suite
 

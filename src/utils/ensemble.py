@@ -213,8 +213,9 @@ def dp_contrastive_decoding(
         return token
 
     except DPExpenseOverflow:
-        eps, delta = dp_engine.get_dp_expense()
-        print(f"[DP] Budget exhausted: eps={eps:.4f}, delta={delta:.2e}")
+        rho_used = dp_engine.get_rho_expense()
+        eps_used, delta_used = dp_engine.get_dp_expense()
+        print(f"[DP] Budget exhausted: rho={rho_used:.6f}, eps={eps_used:.4f}, delta={delta_used:.2e}")
         if getattr(args, 'ada_rag', False):
             print("[DP] Falling back to public model.")
             if bt_dict and bt_dict.get('best_token') is not None:

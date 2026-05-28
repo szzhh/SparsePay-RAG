@@ -111,27 +111,28 @@ def main():
     # Budget split in rho-space (paper Sec. 4, App B.5):
     #   rho_total = rho_cls + rho_gen, where rho_cls = 0.2 * rho_total (1:4 ratio).
     #   The generation script receives 4/5 of rho_total as its privacy budget.
-    generation_rho = ClippedLogitsDP.compute_generation_rho(
-        args.total_eps, args.total_delta, budget_ratio=0.2
-    )
-    generation_eps = ClippedLogitsDP._cdp_eps_static(generation_rho, args.total_delta)
+    # All budget tracking is done in rho-space; no eps->rho->eps conversion.
+    helper = ClippedLogitsDP(0, 0, 0, 0, 1, 1)
+    rho_total = helper._cdp_rho(args.total_eps, args.total_delta)
+    rho_cls = 0.2 * rho_total
+    generation_rho = 0.8 * rho_total
+    # Per-token rho from dp_eps (still passed as CLI arg for compatibility):
+    rho_per_token = helper._cdp_rho(args.dp_eps, args.dp_delta)
     logger.info(
         f"Budget split (1:4 rho-space): "
-        f"rho_cls={generation_rho * 0.2 / 0.8:.6f}, "
-        f"rho_gen={generation_rho:.6f}, "
-        f"eps_gen_target={generation_eps:.4f}"
+        f"rho_total={rho_total:.6f}, rho_cls={rho_cls:.6f}, "
+        f"rho_gen={generation_rho:.6f}, rho_token={rho_per_token:.6f}"
     )
     dp_engine = ClippedLogitsDP(
-        eps_per_token=args.dp_eps,
-        delta_per_token=args.dp_delta,
-        target_eps=generation_eps,
+        rho_per_token=rho_per_token,
+        target_rho=generation_rho,
         target_delta=args.total_delta,
         num_private_models=args.n_split,    # K in the paper
         temperature=args.em_temperature,
         fail_mode='stop',
     )
     logger.info(f"DP engine: C={dp_engine.clip_norm:.4f}, "
-                f"eps_token={args.dp_eps}, K={args.n_split}, tau={args.em_temperature}")
+                f"rho_token={rho_per_token:.6f}, K={args.n_split}, tau={args.em_temperature}")
 
     # --- Read questions ---
     with open(args.evaluation_set, "r", encoding="utf-8") as f:
@@ -178,9 +179,9 @@ def main():
     logger.info("=" * 50)
     logger.info(f"Model: {args.model_name_or_path}")
     logger.info(f"Budget (1:4 split): total_eps={args.total_eps}, "
-                f"rho_cls={generation_rho * 0.2 / 0.8:.6f}, eps_gen={generation_eps:.4f}")
+                f"rho_cls={rho_cls:.6f}, rho_gen={generation_rho:.6f}")
     logger.info(f"Delta={args.total_delta}, K={args.n_split}")
-    logger.info(f"Per-token eps={args.dp_eps}, tau={args.em_temperature}")
+    logger.info(f"Per-token rho={rho_per_token:.6f}, tau={args.em_temperature}")
     logger.info(f"ITR alpha={args.itr_alpha}, theta={args.itr_theta}")
     logger.info(f"Normal exits: {exit_stats['normal']}")
     logger.info(f"Budget-exhausted: {exit_stats['budget_exhausted']}")
