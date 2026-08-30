@@ -121,7 +121,7 @@ python scripts/generate_nq.py \
     --device cuda
 ```
 
-Note: `--dp_eps`/`--dp_delta` are the external (ε,δ) parameters for per-token privatization; the scripts convert them to `rho_per_token`. The scripts also convert `--total_eps`/`--total_delta` to `rho_total` and allocate `target_rho` in rho-space (default 20% retrieval, 80% generation). The internal class `ClippedLogitsDP` performs accounting using `rho_per_token` and `target_rho`; logs primarily report rho values (which can be converted back to (ε,δ) for reporting).
+Note: `--dp_eps`/`--dp_delta` are the external (ε,δ) parameters for per-token privatization; the scripts convert them to `rho_per_token`. The clipping norm (sensitivity) for DP contrastive decoding is derived directly from `rho_per_token` as C = K * tau * sqrt(rho_per_token / 2), i.e., rho_per_token = 2C²/(K²·τ²) (paper Appendix B.5). The scripts also convert `--total_eps`/`--total_delta` to `rho_total` and allocate `target_rho` in rho-space (default 20% retrieval, 80% generation). The internal class `ClippedLogitsDP` performs accounting using `rho_per_token` and `target_rho`; logs primarily report rho values (which can be converted back to (ε,δ) for reporting).
 
 ### 5. Run Full Experiment Suite
 

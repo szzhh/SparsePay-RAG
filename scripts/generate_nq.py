@@ -123,16 +123,10 @@ def main():
         f"rho_total={rho_total:.6f}, rho_cls={rho_cls:.6f}, "
         f"rho_gen={generation_rho:.6f}, rho_token={rho_per_token:.6f}"
     )
-    dp_engine = ClippedLogitsDP(
-        rho_per_token=rho_per_token,
-        target_rho=generation_rho,
-        target_delta=args.total_delta,
-        num_private_models=args.n_split,    # K in the paper
-        temperature=args.em_temperature,
-        fail_mode='stop',
-    )
-    logger.info(f"DP engine: C={dp_engine.clip_norm:.4f}, "
-                f"rho_token={rho_per_token:.6f}, K={args.n_split}, tau={args.em_temperature}")
+    # NOTE: A fresh DP engine is created per query (see loop below), following
+    # the per-query budget protocol of DPVoteRAG / the paper (Sec. 3.4).
+    logger.info(f"DP engine (per query): rho_token={rho_per_token:.6f}, "
+                f"K={args.n_split}, tau={args.em_temperature}")
 
     # --- Read questions ---
     with open(args.evaluation_set, "r", encoding="utf-8") as f:
@@ -142,6 +136,17 @@ def main():
     exit_stats = {"normal": 0, "budget_exhausted": 0}
 
     for i, question in enumerate(tqdm(questions, desc="Generating")):
+        # Fresh DP engine per query: budget resets for every question
+        # (per-query budget rho_query, following DPVoteRAG protocol).
+        dp_engine = ClippedLogitsDP(
+            rho_per_token=rho_per_token,
+            target_rho=generation_rho,
+            target_delta=args.total_delta,
+            num_private_models=args.n_split,    # K in the paper
+            temperature=args.em_temperature,
+            fail_mode='stop',
+        )
+
         # Build prompts: private prompts + public prompt.
         retrieved_docs_path = os.path.join(
             args.retrieved_docs_dir, f'{i}_doc_texts.txt'

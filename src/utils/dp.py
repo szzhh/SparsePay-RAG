@@ -4,7 +4,7 @@ Implements zCDP accounting for the exponential mechanism used in
 DP Contrastive Decoding (Sec. 3.4 of the paper).
 
 Based on the InvisibleInk-style mechanism:
-  rho_token = C^2 / (2 * K^2 * tau^2)
+  rho_token = 2 * C^2 / (K^2 * tau^2)
 """
 
 import math
@@ -56,7 +56,7 @@ class ClippedLogitsDP:
         self.budget_exhausted = False
 
         # Compute clipping norm directly from rho_per_token:
-        # rho_token = C^2 / (2 * K^2 * tau^2)  =>  C = K * tau * sqrt(2 * rho_token)
+        # rho_token = 2 * C^2 / (K^2 * tau^2)  =>  C = K * tau * sqrt(rho_token / 2)
         self.clip_norm = self._compute_clip_norm()
 
     # ------------------------------------------------------------------
@@ -66,10 +66,10 @@ class ClippedLogitsDP:
     def _compute_clip_norm(self) -> float:
         """Derive clipping norm C from rho_per_token.
 
-        From the paper:  rho_token = C^2 / (2 * K^2 * tau^2)
-        =>  C = K * tau * sqrt(2 * rho_token)
+        From the paper:  rho_token = 2 * C^2 / (K^2 * tau^2)
+        =>  C = K * tau * sqrt(rho_token / 2)
         """
-        clip_norm = math.sqrt(2.0 * self.rho_per_token) * float(self.num_private) * float(self.temperature)
+        clip_norm = math.sqrt(0.5 * self.rho_per_token) * float(self.num_private) * float(self.temperature)
         return clip_norm
 
     # ------------------------------------------------------------------
